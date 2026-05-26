@@ -5,40 +5,26 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 # --- Webアプリの基本設定 ---
-st.set_page_config(page_title="Quant Engine v2.6", layout="wide")
+st.set_page_config(page_title="Quant Engine", layout="wide")
 st.title("モンテカルロシミュレーション")
-
-# --- 予測変換用の主要銘柄リスト ---
-TICKER_LIST = [
-    "三菱UFJフィナンシャル・グループ [8306.T]", "SUBARU [7270.T]", "NEC [6701.T]",
-    "トヨタ自動車 [7203.T]", "ソニーグループ [6758.T]", "ソフトバンクグループ [9984.T]",
-    "任天堂 [7974.T]", "ダイキン工業 [6367.T]", "日本電信電話 (NTT) [9432.T]",
-    "日経平均株価 [^N225]", "S&P 500 [^GSPC]", "Apple [AAPL]", "NVIDIA [NVDA]"
-]
 
 # --- サイドバー設定 ---
 st.sidebar.header("⚙️ システムパラメータ")
 
-# 銘柄検索バー（入力すると候補が出る形式）
-search_input = st.sidebar.selectbox("銘柄検索・コード入力:", ["直接入力する"] + TICKER_LIST)
-
-if search_input == "直接入力する":
-    ticker_input = st.sidebar.text_input("コードを直接入力 (例: 6367.T):", value="8306.T")
-else:
-    # 候補からコード部分 [xxxx] だけを抽出
-    ticker_input = search_input.split("[")[-1].replace("]", "")
-
-ticker = ticker_input.strip().upper()
+# シンプルで使いやすいテキスト入力バー
+ticker_input = st.sidebar.text_input("🔍 銘柄コードを入力 (例: 8306.T, 6367.T, AAPL):", value="8306.T")
+ticker = ticker_input.strip().upper() # 小文字を大文字に自動変換
 
 days = st.sidebar.slider("予測日数 (Days):", 10, 252, 60)
 simulations = st.sidebar.slider("試行回数:", 100, 3000, 1000)
 ma_period = st.sidebar.slider("MA期間:", 5, 75, 25)
 bb_sigma = st.sidebar.slider("ボリンジャーバンド(σ):", 1.0, 3.0, 2.0, 0.5)
 
-st.sidebar.header("🔄 バックテスト")
+st.sidebar.header("🔄 バックテスト設定")
 backtest = st.sidebar.checkbox("有効化", value=False)
 backtest_offset = st.sidebar.slider("開始地点 (日前):", 10, 150, 30) if backtest else 0
 
+# --- データ取得関数 ---
 @st.cache_data(ttl=3600) 
 def load_data(t):
     return yf.download(t, period="3y", progress=False)
@@ -50,11 +36,13 @@ def get_name(t):
         return info.get('longName') or info.get('shortName') or t
     except: return t
 
+# --- メイン処理 ---
 if ticker:
-    with st.spinner("Analyzing..."):
+    with st.spinner("データを取得・分析中..."):
         full_data = load_data(ticker)
+        
         if full_data.empty:
-            st.error(f"Error: {ticker}")
+            st.error(f"「{ticker}」のデータを取得できませんでした。コードが正しいか確認してください。")
         else:
             display_name = get_name(ticker)
             data = full_data.iloc[:-backtest_offset] if (backtest and backtest_offset > 0) else full_data
@@ -72,7 +60,7 @@ if ticker:
             for t in range(1, days + 1):
                 price_paths[t] = price_paths[t-1] * daily_returns[t-1]
 
-            # MA/BB計算
+            # 移動平均線とボリンジャーバンドの計算
             ma_paths = np.zeros((days + 1, simulations))
             bb_upper = np.zeros((days + 1, simulations))
             bb_lower = np.zeros((days + 1, simulations))
@@ -81,15 +69,16 @@ if ticker:
                 m, s = np.mean(combined), np.std(combined)
                 ma_paths[t], bb_upper[t], bb_lower[t] = m, m + (bb_sigma * s), m - (bb_sigma * s)
 
-            # --- UI表示 ---
+            # --- 結果表示とUI構築 ---
             st.subheader(f"📊 {display_name} ({ticker})")
             
+            # メトリクスは文字化けしないので日本語に戻しました
             col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-            col_m1.metric("Base Price", f"{S0:.1f}")
-            col_m2.metric("Return (Annual)", f"{mu*252*100:.1f}%")
-            col_m3.metric("Volatility", f"{sigma*np.sqrt(252)*100:.1f}%")
+            col_m1.metric("基準価格", f"{S0:.1f} 円")
+            col_m2.metric("年率期待リターン", f"{mu*252*100:.1f}%")
+            col_m3.metric("年率ボラティリティ", f"{sigma*np.sqrt(252)*100:.1f}%")
             
-            # --- 2画面グラフ (復活版) ---
+            # --- グラフの描画 (2画面 & 英語ラベル) ---
             plt.style.use("default")
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6), gridspec_kw={'width_ratios': [2, 1]})
             
@@ -100,40 +89,60 @@ if ticker:
             
             accuracy_val = 0
             if backtest and actual_future is not None:
-                actual_vals = actual_future['Close'].values[:days+1]
+                # 実際の株価が予測期間より短い場合のエラーを防止
+                actual_vals = actual_future['Close'].values[:min(days+1, len(actual_future))]
                 ax1.plot(range(len(actual_vals)), actual_vals, color='red', linewidth=3, label="Actual Price")
-                # 正しい的中率計算
+                
+                # 的中率の計算
                 in_range = (actual_vals >= np.percentile(price_paths[:len(actual_vals)], 5, axis=1)) & \
                            (actual_vals <= np.percentile(price_paths[:len(actual_vals)], 95, axis=1))
                 accuracy_val = np.mean(in_range) * 100
-                col_m4.metric("Accuracy", f"{accuracy_val:.1f}%")
+                col_m4.metric("モデル的中率", f"{accuracy_val:.1f}%")
 
-            ax1.set_title("Price Path Forecast (English)", fontsize=14)
-            ax1.set_xlabel("Days"); ax1.set_ylabel("Price")
+            ax1.set_title("Price Path Forecast & Bollinger Bands", fontsize=14)
+            ax1.set_xlabel("Days"); ax1.set_ylabel("Price (JPY)")
             ax1.legend(loc='upper left'); ax1.grid(True, alpha=0.3)
 
-            # 右: ヒストグラム (最終価格分布)
+            # 右: ヒストグラム
             final_prices = price_paths[-1]
             ax2.hist(final_prices, bins=40, color='royalblue', alpha=0.6, edgecolor='white')
             ax2.axvline(S0, color='red', linestyle='--', label="Current")
-            ax2.set_title("Price Distribution")
-            ax2.set_xlabel("Final Price"); ax2.grid(True, alpha=0.3)
+            ax2.set_title("Final Price Distribution")
+            ax2.set_xlabel("Price"); ax2.grid(True, alpha=0.3)
             
             st.pyplot(fig)
 
-            # --- 自動分析レポート ---
+            # --- AIアナリスト詳細レポート ---
             st.markdown("---")
             st.subheader("🤖 クオンツ・モデルによる自動分析")
+            
             prob_bullish = (np.sum(final_prices > ma_paths[-1]) / simulations) * 100
-            var_95 = S0 - np.percentile(final_prices, 5)
+            percentile_5 = np.percentile(final_prices, 5)
+            var_95 = S0 - percentile_5
+
+            if prob_bullish >= 60:
+                trend_eval = "統計的に**上昇トレンドが継続しやすい状態**です。順張りの戦略が機能しやすい局面と言えます。"
+                status_icon = "🟢"
+            elif prob_bullish <= 40:
+                trend_eval = "下落リスクが高く、**トレンド転換（デッドクロス）に警戒が必要**です。新規の買いは慎重に行うべき局面です。"
+                status_icon = "🔴"
+            else:
+                trend_eval = "強弱が拮抗しており、**方向感が定まりにくい（もみ合い）状態**です。ボラティリティによるノイズに注意してください。"
+                status_icon = "🟡"
+
+            # 【修正】バックテスト時のテキストインデント（文字の開始位置）の崩れを完全に修正しました
+            backtest_str = ""
+            if backtest:
+                backtest_str = f"\n            * **バックテスト検証**: 過去データに基づく当モデルの信頼区間適合率は **{accuracy_val:.1f}%** でした。"
 
             report = f"""
-            現在、**{display_name}** は {S0:.1f} 円を基準に推移しています。
+            {status_icon} 現在、**{display_name}** は {S0:.1f} 円を基準に推移しています。
+            年率ボラティリティ {sigma*np.sqrt(252)*100:.1f}% の環境下において、シミュレーションを実行した結果、以下のインサイトが得られました。
+
+            * **トレンド予測**: {days}日後に株価が{ma_period}日移動平均線を上回っている確率は **{prob_bullish:.1f}%** です。{trend_eval}
+            * **リスク管理 (VaR)**: 95%の信頼区間において、最悪のシナリオ（下位5%）を想定した場合の最大想定損失額は1株あたり **{var_95:.1f} 円**（予想到達価格: {percentile_5:.1f} 円）です。{backtest_str}
             
-            * **トレンド予測**: {days}日後の強気確率は **{prob_bullish:.1f}%** です。
-            * **リスク管理 (VaR)**: 95%信頼区間での最大損失額は **{var_95:.1f} 円** と予測されます。
+            > **💡 運用アドバイス**: 上記の最大想定損失額（VaR）を、現在の建玉のロスカットライン設定や、信用維持率のストレステストの目安としてご活用ください。
             """
-            if backtest:
-                report += f"\n* **バックテスト結果**: 過去のデータに対するモデルの適合率は **{accuracy_val:.1f}%** でした。"
             
             st.info(report)
