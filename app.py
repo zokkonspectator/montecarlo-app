@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 # --- Webアプリの基本設定 ---
-st.set_page_config(page_title="Quant Engine v2.7", layout="wide")
+st.set_page_config(page_title="Quant Engine v2.8", layout="wide")
 st.title("モンテカルロシミュレーション")
 
 # --- 確実な表示のための銘柄名辞書（通信エラー対策） ---
@@ -49,7 +49,7 @@ backtest_offset = st.sidebar.slider("開始地点 (日前):", 10, 150, 30) if ba
 
 # 反映確認用のバージョンサイン
 st.sidebar.markdown("---")
-st.sidebar.caption("System Version: v2.7")
+st.sidebar.caption("System Version: v2.8")
 
 # --- データ・銘柄名取得関数 ---
 @st.cache_data(ttl=3600) 
@@ -92,12 +92,18 @@ if ticker:
             for t in range(1, days + 1):
                 price_paths[t] = price_paths[t-1] * daily_returns[t-1]
 
-            # MA/BBの計算
-            ma_paths = np.zeros((days + 1, simulations))
-            bb_upper = np.zeros((days + 1, simulations))
-            bb_lower = np.zeros((days + 1, simulations))
+            # 【修正】MA/BBの計算 (全パスの平均値をベースに計算)
+            expected_path = np.mean(price_paths, axis=1) # 全シミュレーションの平均パス
+            ma_paths = np.zeros(days + 1)
+            bb_upper = np.zeros(days + 1)
+            bb_lower = np.zeros(days + 1)
+            
             for t in range(days + 1):
-                combined = np.append(prices[-(ma_period-t):], price_paths[1:t+1, 0]) if t < ma_period else price_paths[t-ma_period+1:t+1, 0]
+                if t < ma_period:
+                    combined = np.append(prices[-(ma_period-t):], expected_path[1:t+1])
+                else:
+                    combined = expected_path[t-ma_period+1:t+1]
+                
                 m, s = np.mean(combined), np.std(combined)
                 ma_paths[t], bb_upper[t], bb_lower[t] = m, m + (bb_sigma * s), m - (bb_sigma * s)
 
@@ -113,10 +119,10 @@ if ticker:
             plt.style.use("default")
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6), gridspec_kw={'width_ratios': [2, 1]})
             
-            # 左: パス推移
+            # 【修正】左: パス推移 ([:, 0] を削除)
             ax1.plot(price_paths, color='royalblue', alpha=0.015)
-            ax1.plot(ma_paths[:, 0], color='darkorange', linewidth=2, label=f"{ma_period}-Day MA")
-            ax1.fill_between(range(days+1), bb_lower[:, 0], bb_upper[:, 0], color='darkorange', alpha=0.15, label=f"BB ±{bb_sigma}σ")
+            ax1.plot(ma_paths, color='darkorange', linewidth=2, label=f"{ma_period}-Day MA")
+            ax1.fill_between(range(days+1), bb_lower, bb_upper, color='darkorange', alpha=0.15, label=f"BB ±{bb_sigma}σ")
             
             accuracy_val = 0
             if backtest and actual_future is not None:
@@ -140,6 +146,7 @@ if ticker:
             ax2.set_xlabel("Price"); ax2.grid(True, alpha=0.3)
             
             st.pyplot(fig)
+            plt.close(fig) # 【追加】メモリリークを防ぐための後処理
 
             # --- AIアナリスト詳細レポート（レイアウト崩れ対策版） ---
             st.markdown("---")
